@@ -108,6 +108,7 @@ const child = spawn(process.execPath, ["dist/server.js"], {
   env: {
     ...process.env,
     PORT: String(appPort),
+    PUBLIC_BASE_URL: `http://127.0.0.1:${appPort}`,
     ELEVENLABS_API_KEY: "test-api-key",
     ELEVENLABS_API_BASE: `http://127.0.0.1:${mockAddress.port}`,
     MCP_PATH_SECRET: pathSecret,
