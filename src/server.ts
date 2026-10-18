@@ -757,6 +757,7 @@ function createMcpServer(origin: string): McpServer {
     }] };
   }
   registerAppTool(server, "generate_music", {
+    _meta: { "openai/toolInvocation/invoking": "Starting music generation…", "openai/toolInvocation/invoked": "Music job started." },
     title: "Generate instrumental music",
     description: "Generate original instrumental BGM with ElevenLabs Music. Consumes credits. Returns a background job; poll get_audio_generation. No speech or vocals are added.",
     inputSchema: {
@@ -767,6 +768,7 @@ function createMcpServer(origin: string): McpServer {
     outputSchema: jobOutput, annotations: paidAnnotations,
   }, async ({ prompt, duration_ms, request_id }) => jobResult(generationQueue.start({ kind: "music", prompt, duration_ms }, request_id)));
   registerAppTool(server, "generate_sound_effect", {
+    _meta: { "openai/toolInvocation/invoking": "Starting SFX generation…", "openai/toolInvocation/invoked": "SFX job started." },
     title: "Generate a sound effect",
     description: "Generate a sound effect such as an electrical whoosh, mechanical impact or cinematic sweep with ElevenLabs. Consumes credits. Poll get_audio_generation.",
     inputSchema: {
@@ -780,6 +782,7 @@ function createMcpServer(origin: string): McpServer {
   }, async ({ prompt, duration_seconds, prompt_influence, loop, request_id }) =>
     jobResult(generationQueue.start({ kind: "sfx", prompt, duration_seconds, prompt_influence, loop }, request_id)));
   registerAppTool(server, "get_audio_generation", {
+    _meta: { "openai/toolInvocation/invoking": "Checking audio…", "openai/toolInvocation/invoked": "Audio status checked." },
     title: "Check music or SFX generation",
     description: "Read a generation job without spending credits. Poll a running job every 5-10 seconds. When ready, download audio_url before expiry and call render_audio using audio_id.",
     inputSchema: { job_id: z.string().uuid() }, outputSchema: jobOutput,
