@@ -1,7 +1,7 @@
 {
   "name": "elevenlabs-chatgpt-mcp",
-  "version": "0.2.6",
-  "description": "A self-hosted ElevenLabs text-to-speech MCP app for ChatGPT, ready for Railway.",
+  "version": "0.3.0",
+  "description": "ElevenLabs speech, instrumental music and SFX MCP for ChatGPT.",
   "type": "module",
   "private": true,
   "engines": {
@@ -14,7 +14,7 @@
     "build": "tsc -p tsconfig.json && npm run build:widget",
     "start": "node dist/server.js",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node tests/smoke.mjs"
+    "test": "npm run build && node --test tests/generation.test.mjs && node tests/smoke.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "^1.7.4",
@@ -31,3 +31,4 @@
     "fast-uri": "3.1.4"
   }
 }
+

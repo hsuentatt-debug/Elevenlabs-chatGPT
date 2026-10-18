@@ -12,9 +12,10 @@ import {
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
+import { createGenerationQueue } from "./generation.js";
 
 const APP_NAME = "ElevenLabs Audio for ChatGPT";
-const APP_VERSION = "0.2.6";
+const APP_VERSION = "0.3.0";
 const TEMPLATE_URI = "ui://widget/elevenlabs-audio-v6.html";
 const ELEVENLABS_API_BASE = (process.env.ELEVENLABS_API_BASE ?? "https://api.elevenlabs.io").replace(/\/$/, "");
 const ELEVENLABS_API_KEY = requiredEnv("ELEVENLABS_API_KEY");
@@ -193,7 +194,7 @@ async function withGenerationLimit<T>(operation: () => Promise<T>): Promise<T> {
     recentGenerations.shift();
   }
   if (recentGenerations.length >= MAX_GENERATIONS_PER_MINUTE) {
-    throw new Error("The deployment's speech generation rate limit has been reached. Please try again in a minute.");
+    throw new Error("The deployment's audio generation rate limit has been reached. Please try again in a minute.");
   }
   if (activeGenerations >= MAX_CONCURRENT_GENERATIONS) {
     throw new Error("The deployment is already generating audio. Please try again in a moment.");
@@ -243,7 +244,7 @@ async function saveVoicePreference(preference: VoicePreference): Promise<"persis
   }
 }
 
-async function elevenLabsRequest(path: string, init: RequestInit): Promise<Response> {
+async function elevenLabsRequest(path: string, init: RequestInit, timeoutMs = 120_000): Promise<Response> {
   const response = await fetch(`${ELEVENLABS_API_BASE}${path}`, {
     ...init,
     headers: {
@@ -251,7 +252,7 @@ async function elevenLabsRequest(path: string, init: RequestInit): Promise<Respo
       "xi-api-key": ELEVENLABS_API_KEY,
       ...init.headers,
     },
-    signal: AbortSignal.timeout(120_000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
 
   if (!response.ok) {
@@ -267,12 +268,22 @@ async function elevenLabsRequest(path: string, init: RequestInit): Promise<Respo
   return response;
 }
 
+
+const generationQueue = createGenerationQueue({
+  request: elevenLabsRequest,
+  limited: withGenerationLimit,
+  maxBytes: MAX_SINGLE_AUDIO_BYTES,
+  cache: (bytes, model) => cacheAudio(bytes, "audio/mpeg", {
+    voiceId: "", modelId: model, outputFormat: "mp3_44100_128", characterCount: 0,
+  }).id,
+});
+
 function createMcpServer(origin: string): McpServer {
   const server = new McpServer(
     { name: "elevenlabs-audio", version: APP_VERSION },
     {
       instructions:
-        `To create audio, call generate_speech exactly once. After it succeeds, immediately call render_audio exactly once with the returned audio_id before replying to the user. Never call generate_speech again merely to render the player, and never invent an audio_id. Keep the signed MP3 link as the fallback when a host cannot display the widget. When no voice is named, call get_preferred_voice. If none is configured, call list_voices, ask the user which voice they want, and call save_preferred_voice only after they choose. Use generate_speech only when the user explicitly wants audio. Generated audio is temporary.\n\n${SPEECH_PROMPTING_GUIDANCE}`,
+        `Use generate_music for instrumental music and generate_sound_effect for sound effects. These return a job_id: poll get_audio_generation until ready or failed; do not restart a running job. Reuse request_id for retries to prevent duplicate charges. Music never includes vocals. Only use generate_speech for explicitly requested speech. To create speech, call generate_speech exactly once. After it succeeds, immediately call render_audio exactly once with the returned audio_id before replying to the user. Never call generate_speech again merely to render the player, and never invent an audio_id. Keep the signed MP3 link as the fallback when a host cannot display the widget. When no voice is named, call get_preferred_voice. If none is configured, call list_voices, ask the user which voice they want, and call save_preferred_voice only after they choose. Use generate_speech only when the user explicitly wants audio. Generated audio is temporary.\n\n${SPEECH_PROMPTING_GUIDANCE}`,
     },
   );
 
@@ -295,7 +306,7 @@ function createMcpServer(origin: string): McpServer {
             redirect_domains: [origin],
           },
           "openai/widgetDescription":
-            "A compact audio player for speech generated with the deployer's ElevenLabs account.",
+            "A compact audio player for audio generated with the deployer's ElevenLabs account.",
         },
       },
     ],
@@ -331,7 +342,7 @@ function createMcpServer(origin: string): McpServer {
         idempotentHint: true,
       },
       _meta: {
-        "openai/toolInvocation/invoking": "Looking for voices…",
+        "openai/toolInvocation/invoking": "Looking for voices.",
         "openai/toolInvocation/invoked": "Voices ready.",
       },
     },
@@ -387,7 +398,7 @@ function createMcpServer(origin: string): McpServer {
         idempotentHint: true,
       },
       _meta: {
-        "openai/toolInvocation/invoking": "Checking the preferred voice…",
+        "openai/toolInvocation/invoking": "Checking the preferred voice.",
         "openai/toolInvocation/invoked": "Voice preference checked.",
       },
     },
@@ -454,7 +465,7 @@ function createMcpServer(origin: string): McpServer {
         idempotentHint: true,
       },
       _meta: {
-        "openai/toolInvocation/invoking": "Saving the preferred voice…",
+        "openai/toolInvocation/invoking": "Saving the preferred voice.",
         "openai/toolInvocation/invoked": "Preferred voice saved.",
       },
     },
@@ -540,7 +551,7 @@ function createMcpServer(origin: string): McpServer {
         idempotentHint: false,
       },
       _meta: {
-        "openai/toolInvocation/invoking": "Giving the words a voice…",
+        "openai/toolInvocation/invoking": "Giving the words a voice.",
         "openai/toolInvocation/invoked": "Audio generated.",
       },
     },
@@ -627,12 +638,12 @@ function createMcpServer(origin: string): McpServer {
     {
       title: "Show the ElevenLabs audio player",
       description:
-        "Use this immediately after generate_speech succeeds. Pass its exact audio_id. This only displays already-generated audio and never generates speech or consumes additional ElevenLabs credits.",
+        "Use this after generate_speech or get_audio_generation returns ready. Pass its exact audio_id. This only displays existing speech, music, or SFX and consumes no additional ElevenLabs credits.",
       inputSchema: {
         audio_id: z
           .string()
           .uuid()
-          .describe("The exact audio_id returned by generate_speech. Do not invent an ID or pass a URL."),
+          .describe("The exact audio_id returned by generate_speech or get_audio_generation. Do not invent an ID or pass a URL."),
       },
       outputSchema: {
         status: z.literal("ready"),
@@ -658,14 +669,14 @@ function createMcpServer(origin: string): McpServer {
       _meta: {
         ui: { resourceUri: TEMPLATE_URI },
         "openai/outputTemplate": TEMPLATE_URI,
-        "openai/toolInvocation/invoking": "Opening the audio player…",
+        "openai/toolInvocation/invoking": "Opening the audio player.",
         "openai/toolInvocation/invoked": "Audio player ready.",
       },
     },
     async ({ audio_id }) => {
       const entry = getCachedAudio(audio_id);
       if (!entry) {
-        throw new Error("Audio is no longer available. Call generate_speech again.");
+        throw new Error("Audio is no longer available. Do not automatically regenerate paid audio.");
       }
 
       const expiresAtIso = new Date(entry.expiresAt).toISOString();
@@ -713,6 +724,67 @@ function createMcpServer(origin: string): McpServer {
       };
     },
   );
+
+
+  const jobOutput = {
+    job_id: z.string().uuid(),
+    status: z.enum(["running", "ready", "failed"]),
+    kind: z.enum(["music", "sfx"]),
+    audio_id: z.string().uuid().optional(),
+    error: z.string().optional(),
+    audio_url: z.string().url().optional(),
+    expires_at: z.string().optional(),
+  };
+  const paidAnnotations = { readOnlyHint: false, destructiveHint: false, openWorldHint: true, idempotentHint: false };
+  const requestIdSchema = z.string().uuid().optional().describe("Reuse this UUID for retries with identical settings to avoid duplicate charges. Choose a new UUID for each new generation.");
+  function jobResult(job: ReturnType<typeof generationQueue.get>) {
+    const cached = job.audio_id ? getCachedAudio(job.audio_id) : null;
+    const result = {
+      ...job,
+      ...(cached && job.audio_id ? {
+        audio_url: signedAudioUrl(origin, job.audio_id, cached.expiresAt),
+        expires_at: new Date(cached.expiresAt).toISOString(),
+      } : {}),
+    };
+    if (job.status === "ready" && !cached) {
+      return { structuredContent: { ...job, status: "failed" as const, error: "Generated audio expired or was evicted. Do not automatically regenerate." },
+        content: [{ type: "text" as const, text: "Generated audio is no longer cached." }] };
+    }
+    return { structuredContent: result, content: [{ type: "text" as const,
+      text: job.status === "running" ? "Generation started. Poll get_audio_generation with this job_id; do not submit another paid generation."
+        : job.status === "ready" ? "Audio ready. Use audio_url to download and render_audio with audio_id to play."
+        : job.error ?? "Generation failed.",
+    }] };
+  }
+  registerAppTool(server, "generate_music", {
+    title: "Generate instrumental music",
+    description: "Generate original instrumental BGM with ElevenLabs Music. Consumes credits. Returns a background job; poll get_audio_generation. No speech or vocals are added.",
+    inputSchema: {
+      prompt: z.string().trim().min(1).max(4100).describe("Genre, instruments, energy, tempo, intro, progression and ending."),
+      duration_ms: z.number().int().min(3000).max(600000).describe("Requested music length in milliseconds."),
+      request_id: requestIdSchema,
+    },
+    outputSchema: jobOutput, annotations: paidAnnotations,
+  }, async ({ prompt, duration_ms, request_id }) => jobResult(generationQueue.start({ kind: "music", prompt, duration_ms }, request_id)));
+  registerAppTool(server, "generate_sound_effect", {
+    title: "Generate a sound effect",
+    description: "Generate a sound effect such as an electrical whoosh, mechanical impact or cinematic sweep with ElevenLabs. Consumes credits. Poll get_audio_generation.",
+    inputSchema: {
+      prompt: z.string().trim().min(1).max(2000),
+      duration_seconds: z.number().min(0.5).max(30).describe("Effect length between 0.5 and 30 seconds."),
+      prompt_influence: z.number().min(0).max(1).default(0.3),
+      loop: z.boolean().default(false),
+      request_id: requestIdSchema,
+    },
+    outputSchema: jobOutput, annotations: paidAnnotations,
+  }, async ({ prompt, duration_seconds, prompt_influence, loop, request_id }) =>
+    jobResult(generationQueue.start({ kind: "sfx", prompt, duration_seconds, prompt_influence, loop }, request_id)));
+  registerAppTool(server, "get_audio_generation", {
+    title: "Check music or SFX generation",
+    description: "Read a generation job without spending credits. Poll a running job every 5-10 seconds. When ready, download audio_url before expiry and call render_audio using audio_id.",
+    inputSchema: { job_id: z.string().uuid() }, outputSchema: jobOutput,
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true },
+  }, async ({ job_id }) => jobResult(generationQueue.get(job_id)));
 
   return server;
 }
@@ -881,3 +953,4 @@ httpServer.listen(PORT, "0.0.0.0", () => {
   console.log(`${APP_NAME} listening on port ${PORT}`);
   console.log("Private MCP endpoint configured.");
 });
+

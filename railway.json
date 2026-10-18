@@ -2,7 +2,7 @@
   "$schema": "https://railway.com/railway.schema.json",
   "build": {
     "builder": "RAILPACK",
-    "buildCommand": "npm ci && npm run build"
+    "buildCommand": "npm ci && npm test"
   },
   "deploy": {
     "startCommand": "npm start",
@@ -14,3 +14,4 @@
     "drainingSeconds": 10
   }
 }
+

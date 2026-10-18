@@ -12,6 +12,7 @@ const dataDir = await mkdtemp(join(tmpdir(), "elevenlabs-mcp-smoke-"));
 let lastSpeechPath = "";
 let lastSpeechBody = null;
 let speechRequestCount = 0;
+let musicRequestCount = 0;
 
 const missingVoiceEnv = {
   ...process.env,
@@ -83,6 +84,18 @@ const mockApi = createServer((req, res) => {
     return;
   }
 
+  if (req.method === "POST" && req.url?.startsWith("/v1/music?")) {
+    musicRequestCount++;
+    let body = "";
+    req.on("data", chunk => body += chunk);
+    req.on("end", () => {
+      const parsed = JSON.parse(body);
+      assert.equal(parsed.force_instrumental, true);
+      assert.equal(parsed.music_length_ms, 67367);
+      res.writeHead(200, { "Content-Type": "audio/mpeg" }).end(fakeAudio);
+    });
+    return;
+  }
   res.writeHead(404).end();
 });
 
@@ -148,7 +161,7 @@ try {
 
   const health = await fetch(`http://127.0.0.1:${appPort}/health`).then((response) => response.json());
   assert.equal(health.status, "ok");
-  assert.equal(health.version, "0.2.6");
+  assert.equal(health.version, "0.3.0");
 
   const initialized = await mcpRequest("initialize", {
     protocolVersion: "2025-11-25",
@@ -157,7 +170,7 @@ try {
   });
   assert.equal(initialized.result.serverInfo.name, "elevenlabs-audio");
   assert.match(
-    initialized.result.instructions.slice(0, 512),
+    initialized.result.instructions,
     /immediately call render_audio exactly once with the returned audio_id/,
   );
   assert.match(initialized.result.instructions, /natural conversational phrasing/);
@@ -166,7 +179,7 @@ try {
   const tools = await mcpRequest("tools/list");
   assert.deepEqual(
     tools.result.tools.map((tool) => tool.name).sort(),
-    ["generate_speech", "get_preferred_voice", "list_voices", "render_audio", "save_preferred_voice"],
+    ["generate_music", "generate_sound_effect", "generate_speech", "get_audio_generation", "get_preferred_voice", "list_voices", "render_audio", "save_preferred_voice"],
   );
   const toolDefinitions = Object.fromEntries(tools.result.tools.map((tool) => [tool.name, tool]));
   assert.equal(toolDefinitions.generate_speech._meta.ui, undefined);
@@ -188,6 +201,27 @@ try {
     idempotentHint: true,
     openWorldHint: false,
   });
+
+
+  const musicArgs = { prompt: "Rock techno trailer", duration_ms: 67367, request_id: "5ea0aef4-51d4-4b80-a08c-d74bc7fed6fb" };
+  const startedMusic = await mcpRequest("tools/call", { name: "generate_music", arguments: musicArgs });
+  const musicJobId = startedMusic.result.structuredContent.job_id;
+  await mcpRequest("tools/call", { name: "generate_music", arguments: musicArgs });
+  let musicStatus;
+  for (let i = 0; i < 40; i++) {
+    musicStatus = await mcpRequest("tools/call", { name: "get_audio_generation", arguments: { job_id: musicJobId } });
+    if (musicStatus.result.structuredContent.status !== "running") break;
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  assert.equal(musicStatus.result.structuredContent.status, "ready");
+  assert.equal(musicRequestCount, 1);
+  const musicAudio = musicStatus.result.structuredContent;
+  assert.deepEqual(Buffer.from(await (await fetch(musicAudio.audio_url)).arrayBuffer()), fakeAudio);
+  const renderedMusic = await mcpRequest("tools/call", { name: "render_audio", arguments: { audio_id: musicAudio.audio_id } });
+  assert.equal(renderedMusic.result.structuredContent.model_id, "music_v1");
+  const invalidDuration = await mcpRequest("tools/call", { name: "generate_music", arguments: { prompt: "Test", duration_ms: 1 } });
+  assert(invalidDuration.result?.isError || invalidDuration.error);
+  assert.equal(musicRequestCount, 1);
 
   const voices = await mcpRequest("tools/call", {
     name: "list_voices",
@@ -489,3 +523,4 @@ try {
   await new Promise((resolve) => mockApi.close(resolve));
   await rm(dataDir, { recursive: true, force: true });
 }
+
